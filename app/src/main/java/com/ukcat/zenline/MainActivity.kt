@@ -921,44 +921,13 @@ fun ArrivalItem(
                 
                 val stepsCount = if (maxMinutes > 2f) (maxMinutes - 2).toInt() else 0
                 if (maxMinutes > 1f) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        val totalWidth = (notifyMinutes - 1f) / (maxMinutes.coerceAtLeast(2f) - 1f)
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.dp)
-                                .align(Alignment.Center)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(totalWidth)
-                                .height(6.dp)
-                                .align(Alignment.CenterStart)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-
-                        Slider(
-                            value = notifyMinutes,
-                            onValueChange = { notifyMinutes = it },
-                            valueRange = 1f..maxMinutes.coerceAtLeast(2f),
-                            steps = stepsCount,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = Color.Transparent,
-                                inactiveTrackColor = Color.Transparent
-                            )
-                        )
-                    }
+                    Slider(
+                        value = notifyMinutes,
+                        onValueChange = { notifyMinutes = it },
+                        valueRange = 1f..maxMinutes.coerceAtLeast(2f),
+                        steps = stepsCount,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 } else {
                     Text("Bus is due soon, notifying immediately.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f))
                 }
