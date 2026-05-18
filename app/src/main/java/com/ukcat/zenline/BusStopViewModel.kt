@@ -31,6 +31,13 @@ sealed class RouteUiState {
     data class Error(val message: String) : RouteUiState()
 }
 
+sealed class JourneyUiState {
+    object Idle : JourneyUiState()
+    object Loading : JourneyUiState()
+    data class Success(val destination: String, val journeys: List<TflJourney>) : JourneyUiState()
+    data class Error(val message: String) : JourneyUiState()
+}
+
 class BusStopViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("zenline_prefs", Context.MODE_PRIVATE)
     
@@ -42,6 +49,9 @@ class BusStopViewModel(application: Application) : AndroidViewModel(application)
 
     private val _routeState = MutableStateFlow<RouteUiState>(RouteUiState.Idle)
     val routeState: StateFlow<RouteUiState> = _routeState
+
+    private val _journeyState = MutableStateFlow<JourneyUiState>(JourneyUiState.Idle)
+    val journeyState: StateFlow<JourneyUiState> = _journeyState
 
     private val _favorites = MutableStateFlow<Set<String>>(
         prefs.getStringSet("favorites", emptySet()) ?: emptySet()
@@ -209,5 +219,31 @@ class BusStopViewModel(application: Application) : AndroidViewModel(application)
 
     fun clearRoute() {
         _routeState.value = RouteUiState.Idle
+    }
+
+    fun searchJourney(fromLat: Double, fromLon: Double, destination: String) {
+        val trimmedDestination = destination.trim()
+        if (trimmedDestination.isEmpty()) return
+
+        viewModelScope.launch {
+            _journeyState.value = JourneyUiState.Loading
+            try {
+                val response = apiService.getJourneyResults(
+                    from = "$fromLat,$fromLon",
+                    to = trimmedDestination
+                )
+                _journeyState.value = JourneyUiState.Success(trimmedDestination, response.journeys)
+            } catch (e: Exception) {
+                _journeyState.value = JourneyUiState.Error(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    fun showJourneyError(message: String) {
+        _journeyState.value = JourneyUiState.Error(message)
+    }
+
+    fun clearJourney() {
+        _journeyState.value = JourneyUiState.Idle
     }
 }

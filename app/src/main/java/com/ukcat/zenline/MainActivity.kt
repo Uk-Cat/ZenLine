@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.material3.Surface
@@ -48,6 +49,12 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 
 import androidx.compose.material3.SheetValue
 
@@ -118,14 +125,18 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
     var viewingRoute by remember { mutableStateOf(false) }
     var viewingSettings by remember { mutableStateOf(false) }
     var viewingInfo by remember { mutableStateOf(false) }
+    var journeyQuery by remember { mutableStateOf("") }
     
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var hasAutoSearched by remember { mutableStateOf(false) }
     
     val uiState by viewModel.uiState.collectAsState()
     val arrivalsState by viewModel.arrivalsState.collectAsState()
     val routeState by viewModel.routeState.collectAsState()
+    val journeyState by viewModel.journeyState.collectAsState()
     val distanceUnit by viewModel.distanceUnit.collectAsState()
     val autoRefreshIntervalSeconds by viewModel.autoRefreshIntervalSeconds.collectAsState()
     val defaultNotificationMinutes by viewModel.defaultNotificationMinutes.collectAsState()
@@ -148,6 +159,28 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
             selectedStop = null
             viewingRoute = false
         }
+    }
+
+    fun submitJourneySearch() {
+        val destination = journeyQuery.trim()
+        if (destination.isEmpty()) return
+
+        focusManager.clearFocus()
+        keyboardController?.hide()
+        viewingSettings = false
+        selectedStop = null
+        viewingRoute = false
+        showMoreArrivals = false
+        viewModel.clearArrivals()
+        viewModel.clearRoute()
+
+        val location = userLocation
+        if (location == null) {
+            viewModel.showJourneyError("Waiting for your current location before planning a journey.")
+        } else {
+            viewModel.searchJourney(location.latitude, location.longitude, destination)
+        }
+        scope.launch { scaffoldState.bottomSheetState.partialExpand() }
     }
 
     BottomSheetScaffold(
@@ -390,48 +423,96 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
                         }
                     }
                 } else if (selectedStop == null) {
-                    // NEARBY STOPS UI
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Nearby Bus Stops",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = MaterialTheme.colorScheme.onBackground,
-                            modifier = Modifier.padding(vertical = 8.dp)
-                        )
-                    }
-
-                    when (val state = uiState) {
-                        is BusStopUiState.Loading -> CircularProgressIndicator(modifier = Modifier.padding(32.dp))
-                        is BusStopUiState.Success -> {
-                            val favorites by viewModel.favorites.collectAsState()
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                contentPadding = PaddingValues(bottom = 16.dp)
-                            ) {
-                                items(state.stops.size) { index ->
-                                    val stop = state.stops[index]
-                                    BusStopItem(
-                                        stop = stop,
-                                        isFavorite = favorites.contains(stop.naptanId),
-                                        distanceUnit = distanceUnit,
-                                        onFavoriteToggle = { viewModel.toggleFavorite(stop.naptanId) },
-                                        onClick = {
-                                            selectedStop = stop
-                                            viewingRoute = false
-                                            viewModel.fetchArrivals(stop.naptanId)
-                                            scope.launch { scaffoldState.bottomSheetState.partialExpand() }
-                                        }
-                                    )
-                                }
+                    if (journeyState !is JourneyUiState.Idle) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconButton(onClick = { viewModel.clearJourney() }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onBackground)
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Journey",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.onBackground
+                                )
+                                val destination = (journeyState as? JourneyUiState.Success)?.destination ?: journeyQuery
+                                Text(
+                                    text = "To $destination",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                             }
                         }
-                        is BusStopUiState.Error -> Text("Error: ${state.message}", color = Color.Red)
-                        else -> {}
+
+                        when (val state = journeyState) {
+                            is JourneyUiState.Loading -> CircularProgressIndicator(modifier = Modifier.padding(32.dp))
+                            is JourneyUiState.Success -> {
+                                if (state.journeys.isEmpty()) {
+                                    Text("No journey options found.", color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+                                } else {
+                                    LazyColumn(
+                                        modifier = Modifier.fillMaxSize(),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        contentPadding = PaddingValues(bottom = 16.dp)
+                                    ) {
+                                        items(state.journeys.size) { index ->
+                                            JourneyItem(journey = state.journeys[index], optionNumber = index + 1)
+                                        }
+                                    }
+                                }
+                            }
+                            is JourneyUiState.Error -> Text("Error: ${state.message}", color = Color.Red)
+                            else -> {}
+                        }
+                    } else {
+                        // NEARBY STOPS UI
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Nearby Bus Stops",
+                                style = MaterialTheme.typography.headlineMedium,
+                                color = MaterialTheme.colorScheme.onBackground,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+                        }
+
+                        when (val state = uiState) {
+                            is BusStopUiState.Loading -> CircularProgressIndicator(modifier = Modifier.padding(32.dp))
+                            is BusStopUiState.Success -> {
+                                val favorites by viewModel.favorites.collectAsState()
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    contentPadding = PaddingValues(bottom = 16.dp)
+                                ) {
+                                    items(state.stops.size) { index ->
+                                        val stop = state.stops[index]
+                                        BusStopItem(
+                                            stop = stop,
+                                            isFavorite = favorites.contains(stop.naptanId),
+                                            distanceUnit = distanceUnit,
+                                            onFavoriteToggle = { viewModel.toggleFavorite(stop.naptanId) },
+                                            onClick = {
+                                                selectedStop = stop
+                                                viewingRoute = false
+                                                viewModel.clearJourney()
+                                                viewModel.fetchArrivals(stop.naptanId)
+                                                scope.launch { scaffoldState.bottomSheetState.partialExpand() }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                            is BusStopUiState.Error -> Text("Error: ${state.message}", color = Color.Red)
+                            else -> {}
+                        }
                     }
                 } else if (viewingRoute && routeState is RouteUiState.Success) {
                     // ROUTE VIEW (List of Stops)
@@ -584,15 +665,20 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
                     }
                 },
                 onStopSelected = { stop ->
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
                     selectedStop = stop
                     viewingRoute = false
                     viewModel.fetchArrivals(stop.naptanId)
                     scope.launch { scaffoldState.bottomSheetState.partialExpand() }
                 },
                 onMapClicked = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
                     selectedStop = null
                     viewingRoute = false
                     viewingSettings = false
+                    viewModel.clearJourney()
                     viewModel.clearArrivals()
                     viewModel.clearRoute()
                     scope.launch { scaffoldState.bottomSheetState.partialExpand() }
@@ -603,10 +689,13 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
             if (routeState !is RouteUiState.Success) {
                 FloatingActionButton(
                     onClick = {
+                        focusManager.clearFocus()
+                        keyboardController?.hide()
                         viewingSettings = false
                         selectedStop = null
                         showMoreArrivals = false
                         viewingRoute = false
+                        viewModel.clearJourney()
                         viewModel.clearArrivals()
                         viewModel.clearRoute()
                         scope.launch { scaffoldState.bottomSheetState.partialExpand() }
@@ -643,38 +732,125 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
                 }
             }
 
-            // Settings & Info Buttons (Only appears in starting section)
+            // Search, settings, and info controls (Only appears in starting section)
             if (selectedStop == null && routeState !is RouteUiState.Success && !viewingSettings) {
-                Column(
+                Row(
                     modifier = Modifier
                         .padding(16.dp)
                         .padding(top = 40.dp)
-                        .align(Alignment.TopEnd),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .align(Alignment.TopCenter),
+                    verticalAlignment = Alignment.Top
                 ) {
                     Surface(
+                        modifier = Modifier.weight(1f),
                         shape = CircleShape,
                         color = if (isDarkMode) Color(0xFF1E1E1E) else Color(0xFFFFFFFF),
                         shadowElevation = 8.dp
                     ) {
-                        IconButton(onClick = { 
-                            viewingSettings = true
-                            scope.launch { scaffoldState.bottomSheetState.partialExpand() }
-                        }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = if (isDarkMode) Color.White else Color.Black)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextField(
+                                value = journeyQuery,
+                                onValueChange = { journeyQuery = it },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("Plan a journey") },
+                                leadingIcon = {
+                                    IconButton(onClick = { submitJourneySearch() }) {
+                                        Icon(Icons.Default.Search, contentDescription = "Search")
+                                    }
+                                },
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                keyboardActions = KeyboardActions(onSearch = { submitJourneySearch() }),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent,
+                                    unfocusedContainerColor = Color.Transparent,
+                                    disabledContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent,
+                                    unfocusedIndicatorColor = Color.Transparent,
+                                    cursorColor = MaterialTheme.colorScheme.primary
+                                )
+                            )
+                            VerticalDivider(
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .padding(vertical = 2.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            IconButton(onClick = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                viewingInfo = true
+                            }) {
+                                Icon(Icons.Default.Info, contentDescription = "Info", tint = if (isDarkMode) Color.White else Color.Black)
+                            }
+                            VerticalDivider(
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .padding(vertical = 2.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant
+                            )
+                            IconButton(onClick = {
+                                focusManager.clearFocus()
+                                keyboardController?.hide()
+                                viewingSettings = true
+                                scope.launch { scaffoldState.bottomSheetState.partialExpand() }
+                            }) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings", tint = if (isDarkMode) Color.White else Color.Black)
+                            }
                         }
                     }
-                    
-                    Surface(
-                        shape = CircleShape,
-                        color = if (isDarkMode) Color(0xFF1E1E1E) else Color(0xFFFFFFFF),
-                        shadowElevation = 8.dp
+                }
+            }
+
+            if (selectedStop == null && routeState !is RouteUiState.Success && !viewingSettings && journeyState !is JourneyUiState.Idle) {
+                val statusText = when (val state = journeyState) {
+                    is JourneyUiState.Loading -> "Planning journey..."
+                    is JourneyUiState.Success -> "${state.journeys.size} journey option${if (state.journeys.size == 1) "" else "s"}"
+                    is JourneyUiState.Error -> "Journey search failed"
+                    else -> ""
+                }
+                val statusColor = when (journeyState) {
+                    is JourneyUiState.Error -> MaterialTheme.colorScheme.errorContainer
+                    else -> if (isDarkMode) Color(0xFF1E1E1E) else Color(0xFFFFFFFF)
+                }
+                val statusContentColor = when (journeyState) {
+                    is JourneyUiState.Error -> MaterialTheme.colorScheme.onErrorContainer
+                    else -> if (isDarkMode) Color.White else Color.Black
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .padding(horizontal = 16.dp)
+                        .padding(top = 108.dp)
+                        .align(Alignment.TopCenter),
+                    shape = CircleShape,
+                    color = statusColor,
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        IconButton(onClick = { 
-                            viewingInfo = true
-                        }) {
-                            Icon(Icons.Default.Info, contentDescription = "Info", tint = if (isDarkMode) Color.White else Color.Black)
+                        if (journeyState is JourneyUiState.Loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                         }
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = statusContentColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -701,6 +877,73 @@ fun MainContent(viewModel: BusStopViewModel = viewModel()) {
                     containerColor = if (isDarkMode) Color(0xFF1E1E1E) else Color(0xFFFFFFFF),
                     titleContentColor = if (isDarkMode) Color.White else Color.Black,
                     textContentColor = if (isDarkMode) Color.White else Color.Black
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun JourneyItem(
+    journey: TflJourney,
+    optionNumber: Int
+) {
+    val legLabels = journey.legs.mapNotNull { leg ->
+        val routeName = leg.routeOptions.firstOrNull()?.lineIdentifier?.name
+            ?: leg.routeOptions.firstOrNull()?.name
+        val modeName = leg.mode?.name
+        when {
+            !routeName.isNullOrBlank() -> routeName
+            !modeName.isNullOrBlank() -> modeName.replaceFirstChar { it.uppercase() }
+            else -> null
+        }
+    }.distinct()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Option $optionNumber",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${journey.duration} min",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (legLabels.isNotEmpty()) {
+                Text(
+                    text = legLabels.joinToString(" / "),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            journey.legs.take(3).forEach { leg ->
+                Text(
+                    text = leg.instruction?.summary ?: leg.instruction?.detailed ?: leg.mode?.name.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -895,7 +1138,8 @@ fun ArrivalItem(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -903,20 +1147,27 @@ fun ArrivalItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Notify ${notifyMinutes.toInt()} min before",
+                        text = "Reminder Time",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
-                    IconButton(onClick = { isConfiguringNotification = false }) {
-                        Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "${notifyMinutes.toInt()} min before",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        IconButton(onClick = { isConfiguringNotification = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                        }
                     }
                 }
                 
                 Text(
                     text = "Bus arrives in ${if (maxMinutes < 1f) "less than 1" else maxMinutes.toInt()} min",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
-                    modifier = Modifier.padding(bottom = 8.dp)
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f)
                 )
                 
                 val stepsCount = if (maxMinutes > 2f) (maxMinutes - 2).toInt() else 0
@@ -926,7 +1177,12 @@ fun ArrivalItem(
                         onValueChange = { notifyMinutes = it },
                         valueRange = 1f..maxMinutes.coerceAtLeast(2f),
                         steps = stepsCount,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.24f),
+                            thumbColor = MaterialTheme.colorScheme.primary
+                        )
                     )
                 } else {
                     Text("Bus is due soon, notifying immediately.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.6f))
